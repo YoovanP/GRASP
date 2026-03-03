@@ -5,7 +5,13 @@ venv/
 __pycache__/
 *.pyc
 
-# model artifacts (optional – see note below)
+# local secrets
+backend/.env
+frontend/.env.local
+.env
+.env.local
+
+# model artifacts (optional ï¿½ see note below)
 
 # model1/stress_model.pkl
 
