@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 import toast, { Toaster } from "react-hot-toast";
 
-// ── types ────────────────────────────────────────────────────────────────────
+// ── types ─────────────────────────────────────────────────────────────────────
 interface StressReading {
   zone_id: string;
   timestamp: string;
@@ -29,7 +29,31 @@ interface Action {
   projected_stress: number;
 }
 
-// ── hex grid layout ──────────────────────────────────────────────────────────
+interface PreviewAction {
+  action?: string;
+  action_type?: string;
+  reduction_pct: number;
+  freed_mw?: number;
+  reduction_mw?: number;
+  projected_stress?: number;
+  load_after_mw?: number;
+}
+
+interface PreviewZone {
+  zone_id: string;
+  stress_score_before: number;
+  risk_category_before: string;
+  stress_score_after: number;
+  risk_category_after: string;
+  primary_driver: string;
+  actions: PreviewAction[];
+  total_freed_mw: number;
+  spillover_reduction: number;
+  forecast_baseline: ForecastPoint[];
+  forecast_with_cuts: ForecastPoint[];
+}
+
+// ── hex grid layout ───────────────────────────────────────────────────────────
 const HEX_POSITIONS: Record<string, [number, number]> = {
   "zone-north":   [1, 0],
   "zone-west":    [0, 1],
@@ -43,31 +67,25 @@ function getFallbackPositions(usedPositions: [number, number][], count: number):
   const result: [number, number][] = [];
   for (let row = 0; row < 5 && result.length < count; row++) {
     for (let col = 0; col < 5 && result.length < count; col++) {
-      if (!used.has(`${col},${row}`)) {
-        result.push([col, row]);
-        used.add(`${col},${row}`);
-      }
+      if (!used.has(`${col},${row}`)) { result.push([col, row]); used.add(`${col},${row}`); }
     }
   }
   return result;
 }
 
 function hexCenter(col: number, row: number, size: number, offsetX = 125, offsetY = -10): [number, number] {
-  const w = size * 2;
-  const h = Math.sqrt(3) * size;
-  const x = col * w * 0.75 + size + offsetX;
-  const y = row * h + (col % 2 === 0 ? 0 : h / 2) + h / 2 + offsetY;
-  return [x, y];
+  const w = size * 2, h = Math.sqrt(3) * size;
+  return [col * w * 0.75 + size + offsetX, row * h + (col % 2 === 0 ? 0 : h / 2) + h / 2 + offsetY];
 }
 
 function hexPoints(cx: number, cy: number, size: number): string {
   return Array.from({ length: 6 }, (_, i) => {
-    const angle = (Math.PI / 180) * (60 * i);
-    return `${(cx + size * Math.cos(angle)).toFixed(2)},${(cy + size * Math.sin(angle)).toFixed(2)}`;
+    const a = (Math.PI / 180) * (60 * i);
+    return `${(cx + size * Math.cos(a)).toFixed(2)},${(cy + size * Math.sin(a)).toFixed(2)}`;
   }).join(" ");
 }
 
-// ── helpers ──────────────────────────────────────────────────────────────────
+// ── helpers ───────────────────────────────────────────────────────────────────
 function getRiskColor(risk: string): string {
   if (risk === "Red") return "#ff3b3b";
   if (risk === "Amber") return "#f0a500";
@@ -78,124 +96,96 @@ function fmt(ts: string) {
   return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-// ── Hex Heatmap ──────────────────────────────────────────────────────────────
-function HexHeatmap({
-  readings,
-  selectedZone,
-  onSelect,
-}: {
-  readings: StressReading[];
-  selectedZone: string | null;
-  onSelect: (id: string) => void;
+// ── Hex Heatmap ───────────────────────────────────────────────────────────────
+function HexHeatmap({ readings, selectedZone, onSelect }: {
+  readings: StressReading[]; selectedZone: string | null; onSelect: (id: string) => void;
 }) {
-  const SIZE = 50;
-  const SVG_W = 500;
-  const SVG_H = 340;
-
+  const SIZE = 50, SVG_W = 500, SVG_H = 340;
   const knownIds = Object.keys(HEX_POSITIONS);
   const unknownReadings = readings.filter(r => !knownIds.includes(r.zone_id));
-  const usedPositions = Object.values(HEX_POSITIONS);
-  const fallbacks = getFallbackPositions(usedPositions, unknownReadings.length);
+  const fallbacks = getFallbackPositions(Object.values(HEX_POSITIONS), unknownReadings.length);
   let fi = 0;
 
-  const positioned = readings.map((r) => {
-    const pos = knownIds.includes(r.zone_id)
-      ? HEX_POSITIONS[r.zone_id]
-      : fallbacks[fi++] ?? [0, 0];
+  const positioned = readings.map(r => {
+    const pos = knownIds.includes(r.zone_id) ? HEX_POSITIONS[r.zone_id] : fallbacks[fi++] ?? [0, 0];
     const [cx, cy] = hexCenter(pos[0], pos[1], SIZE);
     return { ...r, cx, cy };
   });
 
-  const bgHexes: [number, number][] = [
-    [0,0],[1,0],[2,0],
-    [0,1],[1,1],[2,1],
-    [0,2],[1,2],[2,2],
-  ];
+  const bgHexes: [number, number][] = [[0,0],[1,0],[2,0],[0,1],[1,1],[2,1],[0,2],[1,2],[2,2]];
 
   return (
     <svg viewBox={`0 0 ${SVG_W} ${SVG_H}`} style={{ width: "100%", height: "100%", display: "block" }}>
-      {Array.from({ length: 9 }, (_, row) =>
-        Array.from({ length: 13 }, (_, col) => (
-          <circle key={`d${col}-${row}`} cx={col * 40 + 4} cy={row * 42 + 4} r="0.7" fill="#1e2d3d" />
-        ))
-      )}
-
+      {Array.from({ length: 9 }, (_, row) => Array.from({ length: 13 }, (_, col) => (
+        <circle key={`d${col}-${row}`} cx={col * 40 + 4} cy={row * 42 + 4} r="0.7" fill="#1e2d3d" />
+      )))}
       {bgHexes.map(([col, row]) => {
         const [cx, cy] = hexCenter(col, row, SIZE);
-        return (
-          <polygon key={`bg${col}${row}`}
-            points={hexPoints(cx, cy, SIZE - 2)}
-            fill="none" stroke="#1e2d3d" strokeWidth="1" opacity="0.5"
-          />
-        );
+        return <polygon key={`bg${col}${row}`} points={hexPoints(cx, cy, SIZE - 2)} fill="none" stroke="#1e2d3d" strokeWidth="1" opacity="0.5" />;
       })}
-
-      {positioned.map((r) => {
-        const color = getRiskColor(r.risk_category);
-        const sel = selectedZone === r.zone_id;
+      {positioned.map(r => {
+        const color = getRiskColor(r.risk_category), sel = selectedZone === r.zone_id;
         const label = r.zone_id.replace("zone-", "").toUpperCase();
         const fillPct = (SIZE - 8) * (r.stress_score / 100);
-
         return (
           <g key={r.zone_id} onClick={() => onSelect(r.zone_id)} style={{ cursor: "pointer" }}>
-            {sel && (
-              <polygon
-                points={hexPoints(r.cx, r.cy, SIZE + 5)}
-                fill="none" stroke={color} strokeWidth="2" opacity="0.55"
-                style={{ filter: `drop-shadow(0 0 7px ${color})` }}
-              />
-            )}
-
-            <polygon
-              points={hexPoints(r.cx, r.cy, SIZE - 2)}
-              fill={color}
-              fillOpacity={sel ? 0.3 : 0.12}
-              stroke={color}
-              strokeWidth={sel ? 2 : 1}
-              style={{ transition: "fill-opacity 0.2s", filter: sel ? `drop-shadow(0 0 10px ${color}88)` : undefined }}
-            />
-
-            <polygon
-              points={hexPoints(r.cx, r.cy, fillPct)}
-              fill={color}
-              fillOpacity={0.22}
-            />
-
-            <text x={r.cx} y={r.cy - 12}
-              textAnchor="middle" dominantBaseline="middle"
-              fill={color} fontSize="8.5"
-              fontFamily="'Share Tech Mono', monospace"
-              fontWeight="bold" letterSpacing="1.5">
-              {label}
-            </text>
-
-            <text x={r.cx} y={r.cy + 5}
-              textAnchor="middle" dominantBaseline="middle"
-              fill={sel ? "#e8f4ff" : color} fontSize="14"
-              fontFamily="'Barlow Condensed', sans-serif"
-              fontWeight="700">
-              {r.stress_score.toFixed(1)}%
-            </text>
-
-            <text x={r.cx} y={r.cy + 21}
-              textAnchor="middle" dominantBaseline="middle"
-              fill={color} fontSize="7"
-              fontFamily="'Share Tech Mono', monospace"
-              opacity="0.75">
-              {r.risk_category.toUpperCase()}
-            </text>
+            {sel && <polygon points={hexPoints(r.cx, r.cy, SIZE + 5)} fill="none" stroke={color} strokeWidth="2" opacity="0.55" style={{ filter: `drop-shadow(0 0 7px ${color})` }} />}
+            <polygon points={hexPoints(r.cx, r.cy, SIZE - 2)} fill={color} fillOpacity={sel ? 0.3 : 0.12} stroke={color} strokeWidth={sel ? 2 : 1} style={{ transition: "fill-opacity 0.2s", filter: sel ? `drop-shadow(0 0 10px ${color}88)` : undefined }} />
+            <polygon points={hexPoints(r.cx, r.cy, fillPct)} fill={color} fillOpacity={0.22} />
+            <text x={r.cx} y={r.cy - 12} textAnchor="middle" dominantBaseline="middle" fill={color} fontSize="8.5" fontFamily="'Share Tech Mono', monospace" fontWeight="bold" letterSpacing="1.5">{label}</text>
+            <text x={r.cx} y={r.cy + 5} textAnchor="middle" dominantBaseline="middle" fill={sel ? "#e8f4ff" : color} fontSize="14" fontFamily="'Barlow Condensed', sans-serif" fontWeight="700">{r.stress_score.toFixed(1)}%</text>
+            <text x={r.cx} y={r.cy + 21} textAnchor="middle" dominantBaseline="middle" fill={color} fontSize="7" fontFamily="'Share Tech Mono', monospace" opacity="0.75">{r.risk_category.toUpperCase()}</text>
           </g>
         );
       })}
-
-      {readings.length === 0 && (
-        <text x={SVG_W / 2} y={SVG_H / 2}
-          textAnchor="middle" fill="#5a7a94"
-          fontSize="11" fontFamily="'Share Tech Mono', monospace">
-          NO DATA — RUN INFERENCE TO POPULATE
-        </text>
-      )}
+      {readings.length === 0 && <text x={SVG_W / 2} y={SVG_H / 2} textAnchor="middle" fill="#5a7a94" fontSize="11" fontFamily="'Share Tech Mono', monospace">NO DATA — RUN INFERENCE TO POPULATE</text>}
     </svg>
+  );
+}
+
+// ── Dual Forecast Chart ───────────────────────────────────────────────────────
+function DualForecastChart({ baseline, withCuts, color }: {
+  baseline: ForecastPoint[]; withCuts: ForecastPoint[]; color: string;
+}) {
+  const W = 320, H = 110, P = 10;
+  if (!baseline.length || !withCuts.length) return null;
+
+  const allScores = [...baseline, ...withCuts].map(p => p.stress_score);
+  const minV = Math.max(0, Math.min(...allScores) - 5);
+  const maxV = Math.min(100, Math.max(...allScores) + 5);
+
+  const xS = (i: number) => P + (i / Math.max(baseline.length - 1, 1)) * (W - P * 2);
+  const yS = (v: number) => H - P - ((v - minV) / (maxV - minV)) * (H - P * 2);
+
+  const baseLine = baseline.map((p, i) => `${xS(i)},${yS(p.stress_score)}`).join(" ");
+  const cutsLine = withCuts.map((p, i) => `${xS(i)},${yS(p.stress_score)}`).join(" ");
+  const bandPts =
+    withCuts.map((p, i) => `${xS(i)},${yS(p.stress_upper)}`).join(" ") + " " +
+    [...withCuts].reverse().map((p, i) => `${xS(withCuts.length - 1 - i)},${yS(p.stress_lower)}`).join(" ");
+
+  return (
+    <div>
+      <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height: 110 }} preserveAspectRatio="none">
+        <line x1="0" y1={yS(70)} x2={W} y2={yS(70)} stroke="var(--red)" strokeWidth="0.5" strokeDasharray="4,3" opacity="0.5" />
+        <line x1="0" y1={yS(40)} x2={W} y2={yS(40)} stroke="var(--amber)" strokeWidth="0.5" strokeDasharray="4,3" opacity="0.3" />
+        <text x="3" y={yS(70) - 2} fill="var(--red)" fontSize="6" fontFamily="monospace" opacity="0.7">70%</text>
+        <text x="3" y={yS(40) - 2} fill="var(--amber)" fontSize="6" fontFamily="monospace" opacity="0.5">40%</text>
+        {bandPts && <polygon points={bandPts} fill={`${color}15`} />}
+        <polyline points={baseLine} fill="none" stroke="#5a7a94" strokeWidth="1" strokeDasharray="4,3" />
+        <polyline points={cutsLine} fill="none" stroke={color} strokeWidth="1.5" />
+        {withCuts[0] && <circle cx={xS(0)} cy={yS(withCuts[0].stress_score)} r="3" fill={color} />}
+      </svg>
+      <div style={{ display: "flex", gap: "1rem", marginTop: "0.3rem" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "0.3rem" }}>
+          <svg width="18" height="6"><line x1="0" y1="3" x2="18" y2="3" stroke={color} strokeWidth="1.5" /></svg>
+          <span className="mono" style={{ fontSize: "0.48rem", color: "var(--textdim)" }}>WITH CUTS</span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: "0.3rem" }}>
+          <svg width="18" height="6"><line x1="0" y1="3" x2="18" y2="3" stroke="#5a7a94" strokeWidth="1" strokeDasharray="4,2" /></svg>
+          <span className="mono" style={{ fontSize: "0.48rem", color: "var(--textdim)" }}>DO NOTHING</span>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -211,6 +201,8 @@ export default function Dashboard() {
   const [triggering, setTriggering] = useState(false);
   const [clock, setClock] = useState("");
   const [activeTab, setActiveTab] = useState<"map" | "detail">("map");
+  const [preview, setPreview] = useState<PreviewZone[] | null>(null);
+  const [applyingZone, setApplyingZone] = useState<string | null>(null);
 
   useEffect(() => {
     const update = () => setClock(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }));
@@ -230,11 +222,8 @@ export default function Dashboard() {
       setReadings(sorted);
       setLastUpdated(new Date().toLocaleTimeString());
       setError("");
-    } catch {
-      setError("Failed to fetch latest readings.");
-    } finally {
-      setLoading(false);
-    }
+    } catch { setError("Failed to fetch latest readings."); }
+    finally { setLoading(false); }
   }, []);
 
   const fetchZoneDetails = useCallback(async (zone_id: string) => {
@@ -246,45 +235,49 @@ export default function Dashboard() {
     if (aRes.ok) { const ad = await aRes.json(); setActions(ad.actions ?? []); }
   }, []);
 
-  const triggerInfer = async (simulationData?: unknown) => {
+  // ── dry run → show modal ──────────────────────────────────────────────────
+  const triggerInfer = async () => {
     setTriggering(true);
-
-    const inferTask = async () => {
-      const res = await fetch("/api/infer", { 
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(simulationData ? { input_override: simulationData } : {})
+    const url = selectedZone
+      ? `/api/infer?dry_run=true&zone_id=${selectedZone}`
+      : `/api/infer?dry_run=true`;
+    try {
+      const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" } });
+      if (!res.ok) throw new Error("Dry run failed");
+      const data = await res.json();
+      setPreview(data.results);
+    } catch {
+      toast.error("Failed to run inference preview.", {
+        style: { background: "var(--bg3)", color: "var(--textbright)", border: "1px solid var(--border)", fontFamily: "'Share Tech Mono', monospace", fontSize: "0.75rem" }
       });
-      if (!res.ok) throw new Error("Inference task failed");
-      await fetchReadings();
-      return simulationData ? "Simulation complete" : "Inference complete. Grid updated.";
-    };
+    } finally { setTriggering(false); }
+  };
 
-    toast.promise(
-      inferTask(),
-      {
-        loading: simulationData ? "Injecting simulation parameters..." : "Running grid inference engine...",
-        success: (msg) => msg,
-        error: "Failed to run inference. Check logs.",
-      },
-      {
-        style: {
-          minWidth: "250px",
-          background: "var(--bg3)",
-          color: "var(--textbright)",
-          border: "1px solid var(--border)",
-          fontFamily: "'Share Tech Mono', monospace",
-          fontSize: "0.75rem",
-        },
-        success: {
-          duration: 4000,
-          iconTheme: {
-            primary: "var(--green)",
-            secondary: "var(--bg3)",
-          },
-        },
-      }
-    ).finally(() => setTriggering(false));
+  // ── apply one zone, remove it from preview ────────────────────────────────
+  const applyZone = async (zone_id: string) => {
+    setApplyingZone(zone_id);
+    const applyTask = async () => {
+      const res = await fetch(`/api/infer?dry_run=false&zone_id=${zone_id}`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+      });
+      if (!res.ok) throw new Error("Apply failed");
+      await fetchReadings();
+      if (selectedZone === zone_id) fetchZoneDetails(zone_id);
+      setPreview(prev => {
+        if (!prev) return null;
+        const remaining = prev.filter(z => z.zone_id !== zone_id);
+        return remaining.length > 0 ? remaining : null;
+      });
+      return `${zone_id.replace("zone-", "Zone ")} applied.`;
+    };
+    toast.promise(applyTask(), {
+      loading: `Applying ${zone_id.replace("zone-", "Zone ")}...`,
+      success: msg => msg,
+      error: "Failed to apply.",
+    }, {
+      style: { minWidth: "220px", background: "var(--bg3)", color: "var(--textbright)", border: "1px solid var(--border)", fontFamily: "'Share Tech Mono', monospace", fontSize: "0.75rem" },
+      success: { duration: 3000, iconTheme: { primary: "var(--green)", secondary: "var(--bg3)" } },
+    }).finally(() => setApplyingZone(null));
   };
 
   const selectZone = (zone_id: string) => {
@@ -305,10 +298,10 @@ export default function Dashboard() {
     if (selectedZone) fetchZoneDetails(selectedZone);
   }, [selectedZone, fetchZoneDetails]);
 
-  const redCount = readings.filter(r => r.risk_category === "Red").length;
+  const redCount   = readings.filter(r => r.risk_category === "Red").length;
   const amberCount = readings.filter(r => r.risk_category === "Amber").length;
   const greenCount = readings.filter(r => r.risk_category === "Green").length;
-  const avgStress = readings.length > 0
+  const avgStress  = readings.length > 0
     ? (readings.reduce((a, r) => a + r.stress_score, 0) / readings.length).toFixed(1)
     : "—";
 
@@ -363,7 +356,7 @@ export default function Dashboard() {
             </svg>
             <div>
               <div className="cond" style={{ color: "#0af", fontSize: "1.3rem", fontWeight: 700, letterSpacing: "0.12em", textShadow: "0 0 8px #00aaff44", lineHeight: 1 }}>Grasp</div>
-              <div className="mono" style={{ fontSize: "0.52rem", color: "var(--textdim)", letterSpacing: "0.08em" }}> GRID RISK ANALYTICS FOR STRESS & PREVENTION</div>
+              <div className="mono" style={{ fontSize: "0.52rem", color: "var(--textdim)", letterSpacing: "0.08em" }}>GRID RISK ANALYTICS FOR STRESS & PREVENTION</div>
             </div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: "1rem" }}>
@@ -372,9 +365,9 @@ export default function Dashboard() {
               <span className="mono" style={{ fontSize: "0.65rem", color: "var(--green)" }}>LIVE</span>
             </div>
             <div className="mono" style={{ fontSize: "0.65rem", color: "var(--textdim)" }}>{clock}</div>
-            <button onClick={() => triggerInfer()} disabled={triggering} className="cond"
+            <button onClick={triggerInfer} disabled={triggering} className="cond"
               style={{ background: triggering ? "#1e3a5f" : "#1d4ed8", border: "1px solid #2563eb", color: "#fff", fontSize: "0.7rem", fontWeight: 700, letterSpacing: "0.1em", padding: "0.3rem 0.85rem", borderRadius: 2, cursor: triggering ? "not-allowed" : "pointer", opacity: triggering ? 0.6 : 1 }}>
-              {triggering ? "RUNNING…" : "▶ RUN INFERENCE"}
+              {triggering ? "RUNNING…" : selectedZone ? `▶ INFER ${selectedZone.replace("zone-", "").toUpperCase()}` : "▶ RUN INFERENCE"}
             </button>
           </div>
         </header>
@@ -382,12 +375,12 @@ export default function Dashboard() {
         {/* ── STATUS BAR ── */}
         <div style={{ display: "grid", gridTemplateColumns: "repeat(6,1fr)", gap: "1px", background: "var(--border)", borderBottom: "1px solid var(--border)" }}>
           {[
-            { label: "CRITICAL", value: String(redCount), color: "var(--red)", sub: "Red zones" },
-            { label: "AMBER", value: String(amberCount), color: "var(--amber)", sub: "Monitor" },
-            { label: "STABLE", value: String(greenCount), color: "var(--green)", sub: "Green zones" },
-            { label: "AVG STRESS", value: avgStress + "%", color: "var(--blue)", sub: "Grid-wide" },
+            { label: "CRITICAL",    value: String(redCount),        color: "var(--red)",        sub: "Red zones" },
+            { label: "AMBER",       value: String(amberCount),      color: "var(--amber)",      sub: "Monitor" },
+            { label: "STABLE",      value: String(greenCount),      color: "var(--green)",      sub: "Green zones" },
+            { label: "AVG STRESS",  value: avgStress + "%",         color: "var(--blue)",       sub: "Grid-wide" },
             { label: "TOTAL ZONES", value: String(readings.length), color: "var(--textbright)", sub: "Active" },
-            { label: "LAST SYNC", value: lastUpdated || "—", color: "var(--textbright)", sub: "Auto 60s" },
+            { label: "LAST SYNC",   value: lastUpdated || "—",      color: "var(--textbright)", sub: "Auto 60s" },
           ].map((s, i) => (
             <div key={i} style={{ background: "var(--bg2)", padding: "0.55rem 0.8rem", position: "relative", overflow: "hidden" }}>
               <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: 2, background: s.color, boxShadow: `0 0 6px ${s.color}66` }} />
@@ -400,7 +393,7 @@ export default function Dashboard() {
 
         {/* ── MOBILE TABS ── */}
         <div style={{ display: "flex", background: "var(--bg2)", borderBottom: "1px solid var(--border)" }}>
-          {(["map", "detail"] as const).map((tab) => (
+          {(["map", "detail"] as const).map(tab => (
             <button key={tab} onClick={() => setActiveTab(tab)} className="mono"
               style={{ flex: 1, padding: "0.5rem", background: "none", border: "none", borderBottom: `2px solid ${activeTab === tab ? "var(--blue)" : "transparent"}`, color: activeTab === tab ? "var(--blue)" : "var(--textdim)", fontSize: "0.62rem", letterSpacing: "0.1em", cursor: "pointer" }}>
               {tab === "map" ? "⬡ HEATMAP" : "📊 ZONE DETAIL"}
@@ -414,7 +407,6 @@ export default function Dashboard() {
           {/* ── LEFT: HEATMAP + TABLE ── */}
           <div style={{ width: "62%", flexShrink: 0, display: "flex", flexDirection: "column", borderRight: "1px solid var(--border)", overflow: "hidden", height: "calc(100vh - 54px - 72px - 36px)" }}>
 
-            {/* Hex heatmap panel */}
             <div style={{ background: "var(--bg2)", borderBottom: "1px solid var(--border)", padding: "0.8rem 1rem" }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "0.6rem" }}>
                 <div className="mono" style={{ fontSize: "0.65rem", color: "var(--textdim)", letterSpacing: "0.12em" }}>⬡ ZONE HEATMAP — GRID OVERVIEW</div>
@@ -427,7 +419,6 @@ export default function Dashboard() {
                   ))}
                 </div>
               </div>
-
               <div style={{ background: "var(--bg3)", border: "1px solid var(--border)", borderRadius: 2, height: 340, overflow: "hidden", position: "relative" }}>
                 {loading ? (
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%" }}>
@@ -436,15 +427,12 @@ export default function Dashboard() {
                 ) : (
                   <HexHeatmap readings={readings} selectedZone={selectedZone} onSelect={selectZone} />
                 )}
-                {[["top:6px","left:6px","borderTop","borderLeft"],["top:6px","right:6px","borderTop","borderRight"],
-                  ["bottom:6px","left:6px","borderBottom","borderLeft"],["bottom:6px","right:6px","borderBottom","borderRight"]
-                ].map((corners, i) => (
-                  <div key={i} style={{ position: "absolute", [corners[0].split(":")[0]]: corners[0].split(":")[1], [corners[1].split(":")[0]]: corners[1].split(":")[1], width: 12, height: 12, [corners[2]]: "1px solid #243545", [corners[3]]: "1px solid #243545" }} />
+                {[["top:6px","left:6px","borderTop","borderLeft"],["top:6px","right:6px","borderTop","borderRight"],["bottom:6px","left:6px","borderBottom","borderLeft"],["bottom:6px","right:6px","borderBottom","borderRight"]].map((c, i) => (
+                  <div key={i} style={{ position: "absolute", [c[0].split(":")[0]]: c[0].split(":")[1], [c[1].split(":")[0]]: c[1].split(":")[1], width: 12, height: 12, [c[2]]: "1px solid #243545", [c[3]]: "1px solid #243545" }} />
                 ))}
               </div>
             </div>
 
-            {/* Zone table */}
             <div style={{ flex: 1, overflowY: "auto", padding: "0.8rem 1rem" }} className="scrollbar-thin">
               <div className="mono" style={{ fontSize: "1rem", color: "var(--textbright)", letterSpacing: "0.1em", marginBottom: "0.75rem", fontWeight: "bold" }}>
                 ALL ZONES — {readings.length} FEEDERS
@@ -462,16 +450,13 @@ export default function Dashboard() {
               {readings.length > 0 && (
                 <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: "'Share Tech Mono',monospace", fontSize: "0.9rem" }}>
                   <thead>
-                    <tr>
-                      {["ZONE", "STRESS", "RISK", "DRIVER", "UPDATED"].map((h) => (
-                        <th key={h} style={{ color: "var(--textdim)", letterSpacing: "0.08em", padding: "0.65rem 0.75rem", textAlign: "left", borderBottom: "1px solid var(--border)", fontWeight: "normal" }}>{h}</th>
-                      ))}
-                    </tr>
+                    <tr>{["ZONE","STRESS","RISK","DRIVER","UPDATED"].map(h => (
+                      <th key={h} style={{ color: "var(--textdim)", letterSpacing: "0.08em", padding: "0.65rem 0.75rem", textAlign: "left", borderBottom: "1px solid var(--border)", fontWeight: "normal" }}>{h}</th>
+                    ))}</tr>
                   </thead>
                   <tbody>
-                    {readings.map((r) => {
-                      const color = getRiskColor(r.risk_category);
-                      const isSel = selectedZone === r.zone_id;
+                    {readings.map(r => {
+                      const color = getRiskColor(r.risk_category), isSel = selectedZone === r.zone_id;
                       return (
                         <tr key={r.zone_id} className="zone-row" onClick={() => selectZone(r.zone_id)}
                           style={{ background: isSel ? "var(--bg4)" : "transparent", borderLeft: isSel ? `2px solid ${color}` : "2px solid transparent" }}>
@@ -506,14 +491,11 @@ export default function Dashboard() {
             ) : (
               <div style={{ padding: "1rem", display: "flex", flexDirection: "column", gap: "0.85rem" }}>
 
-                {/* Zone header */}
                 {selectedReading && (
                   <div style={{ background: "var(--bg3)", border: "1px solid var(--border)", borderLeft: `3px solid ${rc}`, borderRadius: 2, padding: "0.9rem" }}>
                     <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: "0.65rem" }}>
                       <div>
-                        <div className="cond" style={{ fontWeight: 700, fontSize: "1.3rem", color: "var(--textbright)", textTransform: "capitalize", letterSpacing: "0.04em" }}>
-                          {selectedReading.zone_id.replace(/-/g, " ")}
-                        </div>
+                        <div className="cond" style={{ fontWeight: 700, fontSize: "1.3rem", color: "var(--textbright)", textTransform: "capitalize", letterSpacing: "0.04em" }}>{selectedReading.zone_id.replace(/-/g, " ")}</div>
                         <div className="mono" style={{ fontSize: "0.54rem", color: "var(--textdim)", marginTop: 2 }}>
                           {selectedReading.zone_id.toUpperCase()} · Driver: <span style={{ color: "var(--text)" }}>{selectedReading.primary_driver}</span>
                         </div>
@@ -527,33 +509,18 @@ export default function Dashboard() {
                       <div style={{ flex: 1, height: 8, background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 1, overflow: "hidden" }}>
                         <div style={{ height: "100%", width: `${selectedReading.stress_score}%`, background: selectedReading.risk_category === "Red" ? "linear-gradient(90deg,var(--amber),var(--red))" : selectedReading.risk_category === "Amber" ? "linear-gradient(90deg,var(--green),var(--amber))" : "var(--green)", borderRadius: 1, transition: "width 0.6s ease", boxShadow: `0 0 6px ${rc}55` }} />
                       </div>
-                      <div className="mono" style={{ fontSize: "1.3rem", fontWeight: "bold", color: rc, minWidth: 56, textAlign: "right", textShadow: `0 0 8px ${rc}66` }}>
-                        {selectedReading.stress_score.toFixed(1)}%
-                      </div>
+                      <div className="mono" style={{ fontSize: "1.3rem", fontWeight: "bold", color: rc, minWidth: 56, textAlign: "right", textShadow: `0 0 8px ${rc}66` }}>{selectedReading.stress_score.toFixed(1)}%</div>
                     </div>
                     {selectedReading.inputs && Object.keys(selectedReading.inputs).length > 0 && (
                       <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: "0.4rem" }}>
                         {Object.entries(selectedReading.inputs).map(([k, v]) => (
                           <div key={k} style={{ background: "var(--bg)", border: "1px solid var(--border)", padding: "0.35rem 0.4rem", borderRadius: 2, textAlign: "center" }}>
-                            <div className="mono" style={{ fontSize: "0.75rem", color: "var(--textbright)", fontWeight: "bold" }}>
-                              {typeof v === "number" ? v.toFixed(1) : String(v)}
-                            </div>
-                            <div className="mono" style={{ fontSize: "0.44rem", color: "var(--textdim)", marginTop: 1, letterSpacing: "0.06em", textTransform: "uppercase" }}>
-                              {k.replace(/_/g, " ")}
-                            </div>
+                            <div className="mono" style={{ fontSize: "0.75rem", color: "var(--textbright)", fontWeight: "bold" }}>{typeof v === "number" ? v.toFixed(1) : String(v)}</div>
+                            <div className="mono" style={{ fontSize: "0.44rem", color: "var(--textdim)", marginTop: 1, letterSpacing: "0.06em", textTransform: "uppercase" }}>{k.replace(/_/g, " ")}</div>
                           </div>
                         ))}
                       </div>
                     )}
-                    {/* SIMULATION BUTTON ADDED HERE */}
-                    <button 
-                      onClick={() => triggerInfer({ zone_id: selectedZone, active_demand_mw: 95, temp_c: 45 })}
-                      disabled={triggering}
-                      className="mono"
-                      style={{ width: "100%", marginTop: "1rem", padding: "0.6rem", background: "#ff3b3b15", border: "1px solid #ff3b3b44", color: "var(--red)", fontSize: "0.6rem", cursor: "pointer", borderRadius: 2, letterSpacing: "0.1em" }}
-                    >
-                      ⚠ SIMULATE CRITICAL LOAD (95MW)
-                    </button>
                   </div>
                 )}
 
@@ -579,14 +546,12 @@ export default function Dashboard() {
                       </div>
                       <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: "'Share Tech Mono',monospace", fontSize: "0.58rem" }}>
                         <thead>
-                          <tr>
-                            {["HR+","LOWER","MEDIAN","UPPER"].map((h) => (
-                              <th key={h} style={{ color: "var(--textdim)", letterSpacing: "0.08em", padding: "0.25rem 0.4rem", textAlign: h === "HR+" ? "left" : "right", borderBottom: "1px solid var(--border)", fontWeight: "normal" }}>{h}</th>
-                            ))}
-                          </tr>
+                          <tr>{["HR+","LOWER","MEDIAN","UPPER"].map(h => (
+                            <th key={h} style={{ color: "var(--textdim)", letterSpacing: "0.08em", padding: "0.25rem 0.4rem", textAlign: h === "HR+" ? "left" : "right", borderBottom: "1px solid var(--border)", fontWeight: "normal" }}>{h}</th>
+                          ))}</tr>
                         </thead>
                         <tbody>
-                          {forecast.map((f) => {
+                          {forecast.map(f => {
                             const frc = f.stress_score >= 70 ? "var(--red)" : f.stress_score >= 40 ? "var(--amber)" : "var(--green)";
                             return (
                               <tr key={f.horizon_hr} style={{ borderBottom: "1px solid #1e2d3d44" }}>
@@ -612,23 +577,21 @@ export default function Dashboard() {
                     </div>
                   ) : (
                     <div style={{ display: "flex", flexDirection: "column", gap: "0.45rem" }}>
-                      {actions.map((a) => {
+                      {actions.map(a => {
                         const arc = a.projected_stress >= 70 ? "var(--red)" : a.projected_stress >= 40 ? "var(--amber)" : "var(--green)";
                         return (
                           <div key={a.sequence} style={{ background: "var(--bg)", border: "1px solid var(--border)", borderLeft: "3px solid var(--amber)", borderRadius: 2, padding: "0.55rem 0.65rem", display: "flex", alignItems: "center", gap: "0.6rem" }}>
                             <div className="mono" style={{ color: "var(--textdim)", fontSize: "0.56rem", minWidth: 18 }}>#{a.sequence}</div>
                             <div style={{ flex: 1 }}>
-                              <div className="cond" style={{ fontWeight: 600, fontSize: "0.82rem", color: "var(--textbright)", textTransform: "capitalize" }}>
-                                {a.zone_id.replace(/-/g, " ")}
-                              </div>
+                              <div className="cond" style={{ fontWeight: 600, fontSize: "0.82rem", color: "var(--textbright)", textTransform: "capitalize" }}>{a.zone_id.replace(/-/g, " ")}</div>
                               <div className="mono" style={{ fontSize: "0.5rem", color: "var(--textdim)", textTransform: "uppercase", marginTop: 1 }}>{a.action_type}</div>
                             </div>
                             <div style={{ display: "flex", gap: "0.45rem", flexShrink: 0 }}>
                               {[
-                                { v: `−${a.reduction_pct}%`, k: "CUT", c: "var(--amber)" },
-                                { v: `${a.freed_mw}MW`, k: "FREED", c: "var(--blue)" },
+                                { v: `−${a.reduction_pct}%`, k: "CUT",  c: "var(--amber)" },
+                                { v: `${a.freed_mw}MW`,      k: "FREED", c: "var(--blue)"  },
                                 { v: `→${a.projected_stress.toFixed(1)}%`, k: "PROJ", c: arc },
-                              ].map((m) => (
+                              ].map(m => (
                                 <div key={m.k} style={{ textAlign: "center" }}>
                                   <div className="mono" style={{ fontSize: "0.72rem", fontWeight: "bold", color: m.c }}>{m.v}</div>
                                   <div className="mono" style={{ fontSize: "0.44rem", color: "var(--textdim)" }}>{m.k}</div>
@@ -647,6 +610,139 @@ export default function Dashboard() {
           </div>
         </div>
       </div>
+
+      {/* ── INFERENCE PREVIEW MODAL ── */}
+      {preview && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.75)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100 }}>
+          <div style={{ background: "var(--bg2)", border: "1px solid var(--border2)", borderRadius: 4, width: "100%", maxWidth: 720, maxHeight: "90vh", display: "flex", flexDirection: "column", boxShadow: "0 0 40px #00aaff22" }}>
+
+            {/* Header */}
+            <div style={{ padding: "1rem 1.25rem", borderBottom: "1px solid var(--border)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div>
+                <div className="cond" style={{ fontSize: "1.1rem", fontWeight: 700, color: "var(--textbright)", letterSpacing: "0.08em" }}>INFERENCE PREVIEW</div>
+                <div className="mono" style={{ fontSize: "0.52rem", color: "var(--textdim)", marginTop: 2 }}>
+                  MODEL 3 → LOAD CUTS · MODEL 2 → 12HR FORECAST WITH / WITHOUT CUTS · SPILLOVER APPLIED
+                </div>
+              </div>
+              <button onClick={() => setPreview(null)} style={{ background: "none", border: "none", color: "var(--textdim)", fontSize: "1.1rem", cursor: "pointer" }}>✕</button>
+            </div>
+
+            {/* Zone Cards */}
+            <div style={{ overflowY: "auto", padding: "1rem", display: "flex", flexDirection: "column", gap: "0.75rem", flex: 1 }} className="scrollbar-thin">
+              {preview.map(zone => {
+                const colorBefore = getRiskColor(zone.risk_category_before ?? "Green");
+                const colorAfter  = getRiskColor(zone.risk_category_after);
+                const improved    = zone.stress_score_after < zone.stress_score_before;
+                const isApplying  = applyingZone === zone.zone_id;
+
+                return (
+                  <div key={zone.zone_id} style={{ background: "var(--bg3)", border: `1px solid ${improved ? "#00e67633" : "var(--border)"}`, borderLeft: `3px solid ${colorAfter}`, borderRadius: 2, padding: "0.85rem 1rem" }}>
+
+                    {/* Zone name + spillover badge + driver */}
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.65rem" }}>
+                      <div className="cond" style={{ fontWeight: 700, fontSize: "1rem", color: "var(--textbright)", textTransform: "capitalize" }}>
+                        {zone.zone_id.replace(/-/g, " ")}
+                      </div>
+                      <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+                        {zone.spillover_reduction > 0 && (
+                          <span className="mono" style={{ background: "#00e67618", color: "var(--green)", border: "1px solid #00e67633", fontSize: "0.48rem", padding: "2px 6px", borderRadius: 2 }}>
+                            ↓{zone.spillover_reduction.toFixed(1)}% SPILLOVER
+                          </span>
+                        )}
+                        <div className="mono" style={{ fontSize: "0.5rem", color: "var(--textdim)" }}>
+                          DRIVER: <span style={{ color: "var(--text)" }}>{zone.primary_driver?.replace(/_/g, " ").toUpperCase()}</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Before → After */}
+                    <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", marginBottom: "0.75rem" }}>
+                      <div style={{ textAlign: "center" }}>
+                        <div className="mono" style={{ fontSize: "0.45rem", color: "var(--textdim)", marginBottom: 4 }}>CURRENT</div>
+                        <span className="mono" style={{ background: `${colorBefore}18`, color: colorBefore, border: `1px solid ${colorBefore}55`, fontSize: "0.72rem", padding: "3px 8px", borderRadius: 2 }}>
+                          {zone.stress_score_before?.toFixed(1)}% — {zone.risk_category_before}
+                        </span>
+                      </div>
+                      <span style={{ color: improved ? "var(--green)" : "var(--red)", fontSize: "0.85rem" }}>
+                        {improved ? "↓" : "↑"}
+                      </span>
+                      <div style={{ textAlign: "center" }}>
+                        <div className="mono" style={{ fontSize: "0.45rem", color: "var(--textdim)", marginBottom: 4 }}>AFTER CUTS (+2HR)</div>
+                        <span className="mono" style={{ background: `${colorAfter}18`, color: colorAfter, border: `1px solid ${colorAfter}55`, fontSize: "0.72rem", padding: "3px 8px", borderRadius: 2, fontWeight: "bold" }}>
+                          {zone.stress_score_after?.toFixed(1)}% — {zone.risk_category_after}
+                        </span>
+                      </div>
+                      {zone.total_freed_mw > 0 && (
+                        <div className="mono" style={{ marginLeft: "auto", textAlign: "center" }}>
+                          <div style={{ fontSize: "0.9rem", fontWeight: "bold", color: "var(--blue)" }}>{zone.total_freed_mw.toFixed(1)} MW</div>
+                          <div style={{ fontSize: "0.44rem", color: "var(--textdim)" }}>TOTAL FREED</div>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Dual forecast chart */}
+                    {zone.forecast_baseline?.length > 0 && (
+                      <div style={{ background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 2, padding: "0.5rem 0.6rem", marginBottom: "0.65rem" }}>
+                        <div className="mono" style={{ fontSize: "0.5rem", color: "var(--textdim)", marginBottom: "0.4rem", letterSpacing: "0.08em" }}>12HR FORECAST SIMULATION</div>
+                        <DualForecastChart
+                          baseline={zone.forecast_baseline}
+                          withCuts={zone.forecast_with_cuts}
+                          color={colorAfter}
+                        />
+                      </div>
+                    )}
+
+                    {/* Actions */}
+                    {zone.actions?.length > 0 ? (
+                      <div style={{ display: "flex", flexDirection: "column", gap: "0.3rem", marginBottom: "0.65rem" }}>
+                        {zone.actions.map((a, i) => (
+                          <div key={i} style={{ background: "var(--bg)", border: "1px solid var(--border)", borderLeft: "3px solid var(--amber)", borderRadius: 2, padding: "0.4rem 0.65rem", display: "flex", gap: "1rem", alignItems: "center" }}>
+                            <span className="mono" style={{ color: "var(--amber)", fontSize: "0.62rem", fontWeight: "bold" }}>{a.action ?? a.action_type ?? "CUT"}</span>
+                            <span className="mono" style={{ color: "var(--textdim)", fontSize: "0.58rem" }}>
+                              −{a.reduction_pct}% &nbsp;|&nbsp;
+                              <span style={{ color: "var(--blue)" }}>{a.freed_mw ?? a.reduction_mw}MW FREED</span>
+                              {a.projected_stress !== undefined && (
+                                <> &nbsp;→&nbsp; <span style={{ color: "var(--green)" }}>{a.projected_stress.toFixed(1)}% PROJ</span></>
+                              )}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="mono" style={{ fontSize: "0.55rem", color: "var(--green)", marginBottom: "0.65rem" }}>✓ NO LOAD REDUCTION NEEDED</div>
+                    )}
+
+                    {/* Per-zone apply button */}
+                    <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                      <button
+                        onClick={() => applyZone(zone.zone_id)}
+                        disabled={isApplying}
+                        className="mono"
+                        style={{ padding: "0.35rem 0.85rem", background: isApplying ? "#1e3a5f" : "#1d4ed8", border: "1px solid #2563eb", color: "#fff", fontSize: "0.6rem", borderRadius: 2, cursor: isApplying ? "not-allowed" : "pointer", opacity: isApplying ? 0.6 : 1, letterSpacing: "0.08em" }}>
+                        {isApplying ? "APPLYING…" : `▶ APPLY ${zone.zone_id.replace("zone-", "").toUpperCase()}`}
+                      </button>
+                    </div>
+
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Footer */}
+            <div style={{ padding: "0.85rem 1.25rem", borderTop: "1px solid var(--border)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div className="mono" style={{ fontSize: "0.52rem", color: "var(--textdim)" }}>
+                {preview.filter(z => z.actions?.length > 0).length} zone(s) require action · apply each zone individually above
+              </div>
+              <button onClick={() => setPreview(null)} className="mono"
+                style={{ padding: "0.4rem 1rem", background: "none", border: "1px solid var(--border2)", color: "var(--textdim)", fontSize: "0.62rem", borderRadius: 2, cursor: "pointer", letterSpacing: "0.08em" }}>
+                CLOSE
+              </button>
+            </div>
+
+          </div>
+        </div>
+      )}
+
       <Toaster position="bottom-right" />
     </>
   );
