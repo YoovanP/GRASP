@@ -20,8 +20,10 @@ export async function GET(request: Request) {
   );
 
   if (!res.ok) {
+    const body = await res.text();                          // ← add
+    console.error("Forecast error:", res.status, body);    // ← add
     return NextResponse.json(
-      { error: "Failed to fetch forecast" },
+      { error: "Failed to fetch forecast", detail: body }, // ← add detail
       { status: res.status }
     );
   }
